@@ -6,52 +6,87 @@ license: MIT
 
 # Safe Ainabler (CLI)
 
-Replaces sensitive values with neutral labels (`PERSON_001`, `EMAIL_001`, `PHONE_001`, `COMPANY_001`, `ADDRESS_001`, `CUSTOM_001`) and writes an **encrypted mapping** so the originals can be restored later. Runs entirely on this machine. Same mapping format as the Safe Ainabler web app, so files are interchangeable.
+Replaces sensitive values with neutral labels (`PERSON_001`, `EMAIL_001`, `PHONE_001`, `COMPANY_001`, `ADDRESS_001`, `CUSTOM_001`) and writes an **encrypted mapping** so the originals can be restored later. Everything runs locally.
 
-## Prerequisite
-- Node.js >= 18 (or Bun). For `.xlsx`/`.xls` the `xlsx` package must be installed in the skill folder (`npm install` / `bun install`); `.csv`/`.tsv` work without it.
+## Read this first: you are the risk
+
+If you read the raw file yourself, the data is in your context and sanitizing it afterwards is pointless. **Your job is to run a local tool and never look at the originals.** Treat the raw file as radioactive: it goes in, sanitized output comes out, you only ever handle the sanitized side.
 
 ## THE ONE RULE
-**Never read the raw input file into your own context.** Do not `cat`, read, or print the original file's contents — that would defeat the purpose. Only ever look at:
-- the output of `inspect` (column names only), and
-- the **sanitized** file (contains labels, not real data).
 
-Keep the mapping file and passphrase out of your context. If you must echo a passphrase, get it from the user or from an environment variable, never hardcode it.
-
-## Commands
-The CLI lives at `src/sa.mjs` inside this skill folder. Run it with `node src/sa.mjs <command>` (or `bun src/sa.mjs`).
+**Never open, print, dump, or search the raw input file.** No `Read`, `cat`, `head`, `tail`, `less`, `more`, `grep`, `rg`, `awk`, `sed`, `cut`, `od`, `strings`, `python -c`, or any equivalent. The *only* command you may point at the raw file is:
 
 ```bash
-# 1. See columns and guessed entity types (no cell data is printed)
-node src/sa.mjs inspect input.xlsx
-
-# 2. Sanitize. Auto-detects sensitive columns from the header,
-#    or pass --columns explicitly.
-node src/sa.mjs sanitize input.xlsx --auto -p "USER_PASSPHRASE"
-node src/sa.mjs sanitize input.xlsx --columns "Full Name=person,Email=email,Phone=phone" -p "USER_PASSPHRASE"
-# -> writes input_sanitized.xlsx and input_mapping.safe-ainabler
-
-# 3. Print the instruction to give the AI
-node src/sa.mjs prompt
-
-# 4. After the AI produces output, restore the real values
-node src/sa.mjs restore ai_output.xlsx --mapping input_mapping.safe-ainabler -p "USER_PASSPHRASE"
-# -> writes ai_output_restored.xlsx
+node src/sa.mjs inspect "<raw-file>"   # prints column NAMES only, never cells
 ```
 
-Options: `-o/--out <file>`, `-m/--mapping <file>`, `-p/--passphrase <text>`, `--passphrase-env <VAR>` (env `SAFE_AINABLER_PASSPHRASE` is also read). Entities: `person, company, email, phone, address, custom`. Formats: `.csv .tsv .xlsx .xls` (sheets), `.txt .md` (text, restore only).
+If you need to know which columns hold sensitive data, **ask the user** — do not open the file to find out. If the user hasn't named the columns, ask; then use `--columns`.
 
-Every command prints a JSON summary (paths, column→entity map, counts, credits). No raw values are ever printed.
+## FORBIDDEN
 
-## Workflow
-1. `inspect` the input to learn the columns.
-2. Ask the user for a passphrase (once). Do not store it.
-3. `sanitize` → get `<base>_sanitized.<ext>` and `<base>_mapping.safe-ainabler`.
-4. Send the **sanitized** file (not the original) to the AI, together with the text from `sa prompt`. Only read the sanitized file's contents if you truly must — prefer handing the file to the AI as a whole.
-5. Take the AI's output file, then `restore` it with the mapping + passphrase to recover the real values.
-6. Delete the mapping file when the task is done, unless the user wants to keep it. Losing the mapping (or the passphrase) means the data cannot be restored.
+- Reading the raw file with any tool, for any reason (including "just to check the header" or "to decide what to mask").
+- Generating, choosing, or inventing a passphrase yourself.
+- Printing, echoing, logging, or putting a passphrase into a command line, an env dump, or your output. `echo "$SAFE_AINABLER_PASSPHRASE"` is a leak.
+- Reading or printing the mapping file.
+- Copying the mapping file into any shared, synced, export, or output directory.
+- Running `restore` on data and then showing the restored (real) values.
+
+## Passphrase policy
+
+The passphrase belongs to the user, not to you. The safest path is that **you never touch it**: ask the user to run the wrapper themselves.
+
+```bash
+# user runs this in their own terminal; you only receive the resulting paths
+scripts/sanitize-user.sh "<raw-file>" --auto
+# ... agent works on <raw>_sanitized.<ext> ...
+scripts/restore-user.sh "<ai-output>" --mapping "<raw>_mapping.safe-ainabler"
+```
+
+The wrappers read the passphrase with a hidden prompt and pipe it over stdin (`--passphrase-stdin`) — it never appears in argv, in the environment, or in any transcript.
+
+Only if the user explicitly insists that you run it, use `--passphrase-stdin` or `--passphrase-env <VAR>`, and never print the value.
+
+## Recommended workflow (user-in-the-loop)
+
+1. Ask the user for the raw file path and which columns are sensitive (do **not** open the file).
+2. Ask the user to run `scripts/sanitize-user.sh "<raw>" --columns "…"` (or `--auto`) in their own terminal.
+3. The user gives you only the **sanitized** file. Work on that. Never ask for the mapping or the passphrase.
+4. Produce your output using the labels verbatim (paste the text from `node src/sa.mjs prompt` into your own reasoning/instructions as needed).
+5. Ask the user to run `scripts/restore-user.sh "<your-output>" --mapping "…"` to recover the real values.
+
+## Agent-run workflow (only if the user explicitly allows it)
+
+1. `node src/sa.mjs inspect "<raw>"` → learn columns (names only).
+2. `node src/sa.mjs sanitize "<raw>" --columns "…"` with a passphrase the user provided via stdin/env. Do not generate one.
+3. Read the **sanitized** file only. Do the work. Keep labels verbatim.
+4. `node src/sa.mjs restore "<output>" --mapping "…"` — and do not display the restored values unless the user asks.
+
+## Commands
+
+The CLI lives at `src/sa.mjs` inside this skill folder.
+
+```bash
+node src/sa.mjs inspect  <file>                                   # columns + guessed entities (no cell data)
+node src/sa.mjs sanitize <file> --auto -o <out> -m <mapping>      # passphrase via stdin/env
+node src/sa.mjs restore  <file> --mapping <file> -o <out>
+node src/sa.mjs prompt                                            # instruction to give the AI
+```
+
+Entities: `person, company, email, phone, address, custom`.
+Formats: `.csv .tsv .xlsx .xls` (sheets), `.txt .md` (text, restore only).
+
+## Hardening the harness (recommended)
+
+Instructions are only a soft guarantee. To stop the agent from reading the raw folder *at all*, install the permission guard so the check happens outside the model:
+
+```bash
+node guard/install-claude-guard.mjs ./raw --bash
+```
+
+This merges `deny` rules into `.claude/settings.json` (Claude Code) blocking `Read` of the raw folder and the file-dumping commands. See `guard/claude-settings.example.json`.
 
 ## Notes
-- Labels are unique per value per entity and stable, so the same original always maps to the same label.
-- If the AI paraphrases a label, restore cannot match it. That is why `sa prompt` insists the labels are reproduced verbatim.
+
+- Labels are unique per value per entity and stable, so identical originals always map to the same label.
+- If the AI paraphrases a label, restore cannot match it — hence `sa prompt`.
 - No network access, no telemetry, no server. Nothing leaves the machine.

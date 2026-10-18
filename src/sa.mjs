@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Safe Ainabler CLI — sanitize data before it reaches an AI, restore it afterwards.
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   ENTITY_TYPES,
   guessEntity,
@@ -65,6 +65,10 @@ function str(v) {
 }
 
 function getPassphrase(opts) {
+  if (opts["passphrase-stdin"]) {
+    const v = readFileSync(0, "utf8").replace(/\r?\n$/, "");
+    if (v) return v;
+  }
   const inline = str(opts.passphrase);
   if (inline) return inline;
   const envName = str(opts["passphrase-env"]);
@@ -82,7 +86,7 @@ async function cmdSanitize(pos, opts) {
 
   const passphrase = getPassphrase(opts);
   if (!passphrase) {
-    fail("Missing passphrase. Use --passphrase <text> or --passphrase-env <VAR> (also reads SAFE_AINABLER_PASSPHRASE).");
+    fail("Missing passphrase. Use --passphrase-stdin (recommended: run scripts/sanitize-user.sh yourself), --passphrase-env <VAR>, or --passphrase <text>.");
   }
 
   const rows = await readRows(input);
@@ -142,7 +146,7 @@ async function cmdRestore(pos, opts) {
 
   const passphrase = getPassphrase(opts);
   if (!passphrase) {
-    fail("Missing passphrase. Use --passphrase <text> or --passphrase-env <VAR> (also reads SAFE_AINABLER_PASSPHRASE).");
+    fail("Missing passphrase. Use --passphrase-stdin (recommended: run scripts/sanitize-user.sh yourself), --passphrase-env <VAR>, or --passphrase <text>.");
   }
 
   let mapping;
@@ -225,7 +229,8 @@ Restore options:
   -o, --out <file>                                     Output path (default <base>_restored<ext>)
 
 Passphrase (required for sanitize/restore):
-  -p, --passphrase <text>
+      --passphrase-stdin                               Read the passphrase from stdin (never argv, never shown)
+  -p, --passphrase <text>                              NOT recommended (visible in shell history)
       --passphrase-env <VAR>                           Read passphrase from an env var
   (env SAFE_AINABLER_PASSPHRASE is also read)
 

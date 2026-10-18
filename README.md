@@ -62,6 +62,7 @@ Entities: `person, company, email, phone, address, custom`.
 Formats: `.csv .tsv .xlsx .xls` (sheets), `.txt .md` (text, restore only).
 
 ## How it protects the agent's context
+
 The point is that the model never sees the originals:
 
 ```
@@ -69,7 +70,35 @@ raw file ──sanitize──▶ sanitized file (labels) ──▶ AI ──▶ 
       └─▶ encrypted mapping (stays on disk, never sent)
 ```
 
-So the agent should **never read the raw file** — only the sanitized one. The skill's instructions enforce this.
+An agent will happily read the raw file anyway unless something stops it, so the skill layers three defences:
+
+1. **Instructions (soft).** `SKILL.md` forbids reading the raw file and allows only `sa inspect`, which prints column *names* and never any cell data.
+2. **Permission guard (hard).** Block the agent's access outside the model, so it cannot talk its way past it:
+   ```bash
+   node guard/install-claude-guard.mjs ./raw --bash
+   ```
+   Merges `deny` rules into `.claude/settings.json` that block `Read` of the raw folder (and, with `--bash`, the file-dumping commands). See `guard/claude-settings.example.json`.
+3. **User-run wrappers (strongest).** Let the user own both the passphrase and the raw file, so neither ever reaches the agent:
+   ```bash
+   scripts/sanitize-user.sh data.xlsx --auto
+   scripts/restore-user.sh  ai_output.csv --mapping data_mapping.safe-ainabler
+   ```
+   The passphrase is read with a hidden prompt and piped over stdin (`--passphrase-stdin`) — never in argv, never in the environment, never echoed.
+
+For genuinely sensitive data the cleanest option is to keep the sanitize step **outside** the agent entirely (run the wrapper or use the web app at <https://safe.ainabler.my.id/>) and hand the agent only the sanitized file.
+
+## Repository layout
+```
+SKILL.md                        agent instructions (what to do, what is forbidden)
+src/sa.mjs                      CLI: inspect | sanitize | restore | prompt
+src/engine.mjs                  sanitize/restore + PBKDF2→AES-GCM encryption
+scripts/sanitize-user.sh        user-run wrapper (hidden passphrase prompt)
+scripts/restore-user.sh         user-run wrapper
+guard/install-claude-guard.mjs  merge deny rules into .claude/settings.json
+guard/claude-settings.example.json
+vendor/xlsx.mjs                 bundled SheetJS (Apache-2.0) for .xlsx support
+```
+
 
 ## Test
 ```bash
