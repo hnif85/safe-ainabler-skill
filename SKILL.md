@@ -30,6 +30,7 @@ If you need to know which columns hold sensitive data, **ask the user** — do n
 - Reading or printing the mapping file.
 - Copying the mapping file into any shared, synced, export, or output directory.
 - Running `restore` on data and then showing the restored (real) values.
+- Asking the user for their passphrase, or sending one to the local API. The API holds it; you never supply it.
 
 ## Passphrase policy
 
@@ -61,6 +62,35 @@ Only if the user explicitly insists that you run it, use `--passphrase-stdin` or
 3. Read the **sanitized** file only. Do the work. Keep labels verbatim.
 4. `node src/sa.mjs restore "<output>" --mapping "…"` — and do not display the restored values unless the user asks.
 
+## Local API mode (for harnesses that cannot read files)
+
+If you can make HTTP requests but cannot (or must not) read the file yourself, ask the user to start the local API **in their own terminal**:
+
+```bash
+scripts/serve-user.sh            # the user runs this; they type the passphrase once, hidden
+```
+
+It prints a URL and a bearer token, and writes `.safe-ainabler/serve.json` with `{ "url": ..., "token": ... }`. Reading that small file is fine — it is not raw data. Then:
+
+```bash
+# sanitize: the SERVER reads the file, so its bytes never enter your context
+curl -s -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+     -d '{"path":"data.xlsx","columns":"Name=person,Email=email"}' \
+     http://127.0.0.1:8787/sanitize
+
+# restore: writes the real values to a file and returns only a summary
+curl -s -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+     -d '{"path":"ai_output.xlsx","mappingPath":"data_mapping.safe-ainabler","out":"ai_output_restored.xlsx"}' \
+     http://127.0.0.1:8787/restore
+```
+
+Rules for this mode:
+
+- Prefer `"path"` over uploading bytes. The server reads the file on your behalf; send the file's *contents* only if the user explicitly asks.
+- The response already contains only sanitized material: `preview` (sanitized rows), `text` (when you ask for `inlineText`), and `mappingEncrypted` (opaque ciphertext). Those are safe to look at.
+- `/restore` never returns the real values — it writes them to `out`. Do not read or display that file.
+- Never send a passphrase: the API does not accept one. The user's passphrase stays inside the server process.
+
 ## Commands
 
 The CLI lives at `src/sa.mjs` inside this skill folder.
@@ -69,6 +99,7 @@ The CLI lives at `src/sa.mjs` inside this skill folder.
 node src/sa.mjs inspect  <file>                                   # columns + guessed entities (no cell data)
 node src/sa.mjs sanitize <file> --auto -o <out> -m <mapping>      # passphrase via stdin/env
 node src/sa.mjs restore  <file> --mapping <file> -o <out>
+node src/sa.mjs serve    --port 8787                              # local HTTP API (the user starts this, not you)
 node src/sa.mjs prompt                                            # instruction to give the AI
 ```
 

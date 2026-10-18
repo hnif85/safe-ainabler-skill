@@ -8,7 +8,7 @@
     "safe-ainabler": "src/sa.mjs"
   },
   "scripts": {
-    "test": "node test/roundtrip.mjs"
+    "test": "node test/roundtrip.mjs && node test/api.mjs"
   },
   "engines": {
     "node": ">=18"

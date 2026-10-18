@@ -4,4 +4,5 @@ node_modules/
 *_restored.*
 *_mapping.safe-ainabler
 tmp/
+.safe-ainabler/
 .DS_Store

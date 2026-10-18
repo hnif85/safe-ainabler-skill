@@ -53,6 +53,7 @@ node src/sa.mjs restore  ai_output.xlsx --mapping data_mapping.safe-ainabler -p 
 | `inspect <file>` | Lists column names + guessed entity types. No cell data. |
 | `sanitize <file>` | Writes the sanitized file + encrypted mapping. |
 | `restore <file> --mapping <file>` | Decrypts the mapping and restores real values. |
+| `serve` | Runs the local HTTP API for agents (see below). |
 | `prompt` | Prints the instruction to give the AI so it keeps labels verbatim. |
 | `help` | Full option list. |
 
@@ -60,6 +61,49 @@ Options: `-o/--out`, `-m/--mapping`, `-p/--passphrase`, `--passphrase-env <VAR>`
 
 Entities: `person, company, email, phone, address, custom`.
 Formats: `.csv .tsv .xlsx .xls` (sheets), `.txt .md` (text, restore only).
+
+## Local API (for agents that can't read files)
+
+Some harnesses can make HTTP calls but must not read the file themselves. Let the user start the local API — it holds the passphrase and reads the raw file on the agent's behalf:
+
+```bash
+scripts/serve-user.sh --port 8787     # the user runs this; they type the passphrase once, hidden
+```
+
+It prints a URL and a bearer token, and writes `.safe-ainabler/serve.json`:
+
+```json
+{ "url": "http://127.0.0.1:8787", "token": "…" }
+```
+
+```bash
+TOKEN=…
+
+# Sanitize by path — the server reads the file, so the raw bytes never reach the agent
+curl -s -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+     -d '{"path":"data.xlsx","columns":"Name=person,Email=email"}' \
+     http://127.0.0.1:8787/sanitize
+
+# Restore — writes the real values to disk and returns only a summary
+curl -s -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+     -d '{"path":"ai_output.xlsx","mappingPath":"data_mapping.safe-ainabler","out":"ai_output_restored.xlsx"}' \
+     http://127.0.0.1:8787/restore
+```
+
+`GET /health` needs no token; everything else needs `Authorization: Bearer <token>` (or `X-Safe-Token`).
+
+| Endpoint | Body | Returns |
+| --- | --- | --- |
+| `GET /health` | — | status, version, whether a passphrase is loaded |
+| `POST /sanitize` | `{ path }` or a multipart `file`; optional `columns`, `out`, `mappingOut`, `inlineText`, `previewRows` | sanitized file on disk, `preview` (sanitized rows), `mappingEncrypted` (opaque) |
+| `POST /restore` | `{ path }` / `{ text, format }` / multipart `file`, plus `mappingPath` or `mapping`, and `out` | the restored file **on disk** — a path and a summary, never the values |
+
+What keeps the promise intact:
+
+- **Passphrase once, at startup, by the user.** The API never accepts a passphrase per request, never logs it, and never returns it.
+- **`path` beats upload.** The server reads the file; the raw bytes stay out of the agent's context.
+- **`/restore` never echoes real values.** They can only be written to `out`, so an agent cannot pull them into a conversation by accident.
+- **Token-guarded and localhost-only.** Binds `127.0.0.1`, requires a random bearer token so other local processes can't drive it, and never logs request bodies.
 
 ## How it protects the agent's context
 
@@ -70,7 +114,7 @@ raw file ──sanitize──▶ sanitized file (labels) ──▶ AI ──▶ 
       └─▶ encrypted mapping (stays on disk, never sent)
 ```
 
-An agent will happily read the raw file anyway unless something stops it, so the skill layers three defences:
+An agent will happily read the raw file anyway unless something stops it, so the skill layers four defences:
 
 1. **Instructions (soft).** `SKILL.md` forbids reading the raw file and allows only `sa inspect`, which prints column *names* and never any cell data.
 2. **Permission guard (hard).** Block the agent's access outside the model, so it cannot talk its way past it:
@@ -84,18 +128,23 @@ An agent will happily read the raw file anyway unless something stops it, so the
    scripts/restore-user.sh  ai_output.csv --mapping data_mapping.safe-ainabler
    ```
    The passphrase is read with a hidden prompt and piped over stdin (`--passphrase-stdin`) — never in argv, never in the environment, never echoed.
+4. **Local API (zero file access).** When the agent can't be trusted with the filesystem at all, the user runs `scripts/serve-user.sh` and the agent only ever talks HTTP to it. The server reads the file on the agent's behalf and `/restore` writes real values to disk instead of returning them — see [Local API](#local-api-for-agents-that-cant-read-files).
 
 For genuinely sensitive data the cleanest option is to keep the sanitize step **outside** the agent entirely (run the wrapper or use the web app at <https://safe.ainabler.my.id/>) and hand the agent only the sanitized file.
 
 ## Repository layout
 ```
 SKILL.md                        agent instructions (what to do, what is forbidden)
-src/sa.mjs                      CLI: inspect | sanitize | restore | prompt
+src/sa.mjs                      CLI: inspect | sanitize | restore | serve | prompt
+src/server.mjs                  local HTTP API (sanitize/restore) for agents
 src/engine.mjs                  sanitize/restore + PBKDF2→AES-GCM encryption
 scripts/sanitize-user.sh        user-run wrapper (hidden passphrase prompt)
 scripts/restore-user.sh         user-run wrapper
+scripts/serve-user.sh           user-run wrapper that starts the local API
 guard/install-claude-guard.mjs  merge deny rules into .claude/settings.json
 guard/claude-settings.example.json
+test/roundtrip.mjs              CLI sanitize → restore round-trip
+test/api.mjs                    local API: auth, sanitize, restore, no leaks
 vendor/xlsx.mjs                 bundled SheetJS (Apache-2.0) for .xlsx support
 ```
 
@@ -104,12 +153,12 @@ vendor/xlsx.mjs                 bundled SheetJS (Apache-2.0) for .xlsx support
 ```bash
 npm test
 ```
-Runs a sanitize → restore round-trip and checks that a wrong passphrase is rejected.
+Runs a CLI sanitize → restore round-trip (and checks a wrong passphrase is rejected), then the local API: health, token enforcement, sanitize by path and by upload, restore, and that no response ever carries the real values.
 
 ## Security notes
 - Mapping is encrypted with PBKDF2-SHA256 (210,000 iterations) → AES-GCM-256.
 - The passphrase is never stored. Lose it and the mapping is unrecoverable.
-- No network calls at any point.
+- No outbound network calls at any point. `sa serve` only listens on `127.0.0.1`.
 
 ## License
 MIT. Bundles SheetJS (`xlsx`, Apache-2.0) for spreadsheet support when installed.

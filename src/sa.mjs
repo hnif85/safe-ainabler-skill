@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Safe Ainabler CLI — sanitize data before it reaches an AI, restore it afterwards.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import {
   ENTITY_TYPES,
   guessEntity,
@@ -209,6 +210,63 @@ function cmdPrompt() {
   console.log(SMALL_PROMPT);
 }
 
+async function cmdServe(opts) {
+  const { createApiServer, writeStateFile } = await import("./server.mjs");
+
+  const port = opts.port === undefined ? 8787 : Number(str(opts.port));
+  if (!Number.isInteger(port) || port < 0 || port > 65535) fail(`Invalid --port "${opts.port}".`);
+  const host = str(opts.host) ?? "127.0.0.1";
+  const quiet = Boolean(opts.quiet);
+  const passphrase = getPassphrase(opts);
+
+  const server = createApiServer({ version: VERSION, passphrase, quiet });
+  await new Promise((listening, failed) => {
+    server.once("error", failed);
+    server.listen(port, host, listening);
+  });
+
+  const url = `http://${host}:${server.address().port}`;
+  const statePath = str(opts.state) ?? ".safe-ainabler/serve.json";
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeStateFile(statePath, {
+    url,
+    token: server.token,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+  });
+
+  if (!quiet) {
+    console.log(`Safe Ainabler API   ${url}`);
+    console.log(`Bearer token        ${server.token}`);
+    console.log(
+      `Passphrase          ${
+        passphrase
+          ? "loaded (kept in memory; never sent per request, never logged)"
+          : "NOT loaded — sanitize/restore will fail. Restart with --passphrase-stdin."
+      }`
+    );
+    console.log(`State file          ${resolve(statePath)}`);
+    console.log("");
+    console.log("Sanitize by path (the server reads the file; the raw bytes never reach the agent):");
+    console.log(`  curl -s -H "Authorization: Bearer ${server.token}" -H "content-type: application/json" \\`);
+    console.log(`       -d '{"path":"data.csv","columns":"Name=person,Email=email"}' ${url}/sanitize`);
+    console.log("");
+    console.log("Stop with Ctrl-C.");
+  }
+
+  const stop = () => {
+    try {
+      unlinkSync(statePath);
+    } catch {
+      // state file already gone
+    }
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 250).unref();
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+}
+
 function help() {
   console.log(`safe-ainabler ${VERSION} — sanitize data before AI, restore it after.
 
@@ -216,6 +274,7 @@ Usage:
   sa inspect  <file>                                   List columns + guessed entities (no data shown)
   sa sanitize <file> [options]                         Write <base>_sanitized + <base>_mapping.safe-ainabler
   sa restore  <file> --mapping <file> [options]         Write <base>_restored
+  sa serve    [options]                                Run a local HTTP API (sanitize/restore) for agents
   sa prompt                                            Print the instruction to give the AI
 
 Sanitize options:
@@ -228,7 +287,13 @@ Restore options:
   -m, --mapping <file>                                 Encrypted mapping file (required)
   -o, --out <file>                                     Output path (default <base>_restored<ext>)
 
-Passphrase (required for sanitize/restore):
+Serve options (local HTTP API for agents):
+      --host <addr>                                    Bind address (default 127.0.0.1; keep it local)
+      --port <n>                                       Port (default 8787)
+      --state <file>                                   Where to write url+token (default .safe-ainabler/serve.json)
+      --quiet                                          Only print errors
+
+Passphrase (required for sanitize/restore/serve):
       --passphrase-stdin                               Read the passphrase from stdin (never argv, never shown)
   -p, --passphrase <text>                              NOT recommended (visible in shell history)
       --passphrase-env <VAR>                           Read passphrase from an env var
@@ -255,6 +320,10 @@ try {
     case "inspect":
       if (opts.help) help();
       else await cmdInspect(pos);
+      break;
+    case "serve":
+      if (opts.help) help();
+      else await cmdServe(opts);
       break;
     case "prompt":
       cmdPrompt();
