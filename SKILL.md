@@ -1,10 +1,10 @@
 ---
 name: safe-ainabler
-description: Sanitize sensitive values (names, companies, emails, phones, addresses) in Excel/CSV/text before sending them to an AI model, then restore the real values afterward from an encrypted mapping file. Use when the user wants to anonymize, mask, pseudonymize, or de-identify a spreadsheet or document before pasting it into ChatGPT/Claude/any LLM, or to turn placeholder labels such as PERSON_001 back into the originals. Triggers: sanitize data, anonymize file, mask PII, pseudonymize, de-identify, clean data before AI, safe ainabler, restore placeholders, restore anonymized data.
+description: Sanitize sensitive values (names, companies, emails, phones, addresses) in Excel/CSV/text before sending them to an AI model, then restore the real values afterward from an encrypted mapping file. Use when the user wants to anonymize, mask, pseudonymize, or de-identify a spreadsheet or document before pasting it into ChatGPT/Claude/any LLM, or to turn placeholder labels such as PERSON_001 back into the originals. Works three ways — the user runs a shell wrapper, you run the local CLI, or you call the bundled local HTTP API (sa serve) when you cannot read files yourself. Triggers: sanitize data, anonymize file, mask PII, pseudonymize, de-identify, clean data before AI, safe ainabler, restore placeholders, restore anonymized data, sanitize API, local API for PII, serve sanitize endpoint.
 license: MIT
 ---
 
-# Safe Ainabler (CLI)
+# Safe Ainabler
 
 Replaces sensitive values with neutral labels (`PERSON_001`, `EMAIL_001`, `PHONE_001`, `COMPANY_001`, `ADDRESS_001`, `CUSTOM_001`) and writes an **encrypted mapping** so the originals can be restored later. Everything runs locally.
 
@@ -32,6 +32,18 @@ If you need to know which columns hold sensitive data, **ask the user** — do n
 - Running `restore` on data and then showing the restored (real) values.
 - Asking the user for their passphrase, or sending one to the local API. The API holds it; you never supply it.
 
+## Which mode to use
+
+Pick the **safest mode the situation allows** — never take more access than you need.
+
+| Mode | Use when | What you touch | Passphrase |
+| --- | --- | --- | --- |
+| **A. User-run wrappers** (default) | Always — the user is at their terminal | the sanitized file only | the user types it; you never see it |
+| **B. You run the CLI** | Only when the user explicitly asks you to | the sanitized file only | handed to you via stdin/env — never generate one |
+| **C. Local API** | Your harness can make HTTP calls but cannot (or must not) read files | HTTP responses only (`preview`, `mappingEncrypted`) | loaded once inside the server; never sent per request |
+
+All three produce the same artifacts (`<base>_sanitized.<ext>` + `<base>_mapping.safe-ainabler`), and the mapping files are interchangeable. Prefer **A**; fall back to **C** when you have no filesystem access; reach for **B** only on request.
+
 ## Passphrase policy
 
 The passphrase belongs to the user, not to you. The safest path is that **you never touch it**: ask the user to run the wrapper themselves.
@@ -47,7 +59,7 @@ The wrappers read the passphrase with a hidden prompt and pipe it over stdin (`-
 
 Only if the user explicitly insists that you run it, use `--passphrase-stdin` or `--passphrase-env <VAR>`, and never print the value.
 
-## Recommended workflow (user-in-the-loop)
+## Mode A — user-in-the-loop (default)
 
 1. Ask the user for the raw file path and which columns are sensitive (do **not** open the file).
 2. Ask the user to run `scripts/sanitize-user.sh "<raw>" --columns "…"` (or `--auto`) in their own terminal.
@@ -55,16 +67,16 @@ Only if the user explicitly insists that you run it, use `--passphrase-stdin` or
 4. Produce your output using the labels verbatim (paste the text from `node src/sa.mjs prompt` into your own reasoning/instructions as needed).
 5. Ask the user to run `scripts/restore-user.sh "<your-output>" --mapping "…"` to recover the real values.
 
-## Agent-run workflow (only if the user explicitly allows it)
+## Mode B — you run the CLI (only if the user explicitly allows it)
 
 1. `node src/sa.mjs inspect "<raw>"` → learn columns (names only).
 2. `node src/sa.mjs sanitize "<raw>" --columns "…"` with a passphrase the user provided via stdin/env. Do not generate one.
 3. Read the **sanitized** file only. Do the work. Keep labels verbatim.
 4. `node src/sa.mjs restore "<output>" --mapping "…"` — and do not display the restored values unless the user asks.
 
-## Local API mode (for harnesses that cannot read files)
+## Mode C — local API (for harnesses that cannot read files)
 
-If you can make HTTP requests but cannot (or must not) read the file yourself, ask the user to start the local API **in their own terminal**:
+Ask the user to start it **in their own terminal**:
 
 ```bash
 scripts/serve-user.sh            # the user runs this; they type the passphrase once, hidden
@@ -120,4 +132,5 @@ This merges `deny` rules into `.claude/settings.json` (Claude Code) blocking `Re
 
 - Labels are unique per value per entity and stable, so identical originals always map to the same label.
 - If the AI paraphrases a label, restore cannot match it — hence `sa prompt`.
-- No network access, no telemetry, no server. Nothing leaves the machine.
+- No outbound network access, no telemetry. Nothing leaves the machine. `sa serve` only listens on `127.0.0.1`, and only while the user runs it.
+- The same mapping file works with the CLI, the local API, and the web app at <https://safe.ainabler.my.id/> — mix them freely.
