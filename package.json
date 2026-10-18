@@ -1,0 +1,20 @@
+{
+  "name": "safe-ainabler-skill",
+  "version": "1.0.0",
+  "description": "Agent skill: sanitize sensitive data in Excel/CSV before sending to an AI, then restore the real values from an encrypted mapping file.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "safe-ainabler": "src/sa.mjs"
+  },
+  "scripts": {
+    "test": "node test/roundtrip.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  },
+  "license": "MIT"
+}
